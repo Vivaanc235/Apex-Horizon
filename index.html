@@ -1514,8 +1514,9 @@ function lightsUpdate(t){
   }
   if(ch){lights.red.instanceColor.needsUpdate=true;lights.yel.instanceColor.needsUpdate=true;lights.grn.instanceColor.needsUpdate=true;}
 }
-function updateTraffic(dt,pl){
+function updateTraffic(dt,pl,only){
   for(const t of traffic){
+    if(only&&!t.suspect)continue;
     let target=t.vmax;
     const fx=Math.sin(t.h),fz=Math.cos(t.h);
     const check=(ox,oz)=>{const dx=ox-t.x,dz=oz-t.z;const ah=dx*fx+dz*fz,lt=Math.abs(dx*fz-dz*fx);
@@ -2287,7 +2288,7 @@ function simulateRoam(dt){
   const p=player,inp=readInput(dt);
   p.cgrass=cityGrass(p.x,p.z);
   stepCar(p,inp,dt);
-  if(Net.mirror)trafficNetUpdate(dt);else updateTraffic(dt,p);
+  if(Net.mirror){trafficNetUpdate(dt);if(state.job&&state.job.suspect)updateTraffic(dt,p,true);}else updateTraffic(dt,p);
   remotesVsCar(p);
   trafficVsCar(p,(t,dist)=>{const e=(25+p.speed*1.4)*10;save.money+=e;toast('Near miss  +'+$m(e),'gold');});
   const kmh=p.speed*3.6;
@@ -2335,7 +2336,7 @@ function setupRace(ev,go){
   const ids=go?go.ids:[Net.id];const SL=[5,4,3,2,1,0,6,7];
   const humanAt={};ids.forEach((id,i)=>{humanAt[SL[i]]=id;});
   const rnd=mulberry(go?go.seed:((Date.now()&0xffff)+7));
-  const simAI=!Net.mode||Net.host;
+  const simAI=!Net.mode||!go||go.sim===Net.id;
   let ai=0;
   for(let k=0;k<8;k++){
     const hid=humanAt[k];
@@ -2849,6 +2850,7 @@ function phoneAct(act,id,v,btn){
   if(act==='jcars'){state.sf=id;setTab('shop');return;}
   if(act==='sf'){state.sf=id==='all'?null:(isNaN(+id)?id:+id);renderPhone();return;}
   if(dragAct(act,id))return;
+  if(coAct(act,id))return;
   if(act==='jstart'){startJob(id);return;}
   if(act==='jcancel'){cancelJob(false);renderPhone();return;}
   if(act==='place'){const p=PLACES.find(q=>q.id===id);if(p){closePhone();setupRoam(p.x,p.z,p.h);toast('Arrived: '+p.name,'good');}return;}
@@ -3008,7 +3010,7 @@ const jobVis=[];
 
 function makeNPC(name,opts){
   opts=opts||{};
-  const shirt=C(opts.shirt||pick(NPC_SHIRTS)),skin=C(opts.skin||pick(NPC_SKINS));
+  const shirtHex=opts.shirt||pick(NPC_SHIRTS),skinHex=opts.skin||pick(NPC_SKINS),shirt=C(shirtHex),skin=C(skinHex);
   const g=new THREE.Group();
   const mm=(c,r)=>new THREE.MeshStandardMaterial({color:c,roughness:r||.85});
   const armG=new THREE.BoxGeometry(.09,.55,.09).translate(0,-.27,0);
@@ -3021,7 +3023,7 @@ function makeNPC(name,opts){
   if(opts.cap)g.add(new THREE.Mesh(new THREE.CylinderGeometry(.17,.17,.09,10).translate(0,1.84,0),mm(C(opts.cap))));
   g.children.forEach(o=>{o.castShadow=true;});
   cityGroup.add(g);
-  const n={g,armR,armL,name,tx:0,tz:0,moving:false,speed:1.7,wave:false,ph:Math.random()*6,fade:0,dead:false,bubble:null,onArrive:null,icon:null,shirt:opts.shirt,skin:opts.skin};
+  const n={g,armR,armL,name,tx:0,tz:0,moving:false,speed:1.7,wave:false,ph:Math.random()*6,fade:0,dead:false,bubble:null,onArrive:null,icon:null,shirt:shirtHex,skin:skinHex};
   npcs.push(n);return n;
 }
 function npcPlace(n,x,z,h){n.g.position.set(x,.15,z);n.g.rotation.y=h||0;}
@@ -3036,7 +3038,7 @@ function wrapLines(x,text,maxW){
   if(cur)lines.push(cur);return lines;
 }
 function npcSay(n,text,dur){
-  toast(n.name+': "'+text+'"','');
+  jtoast(n.name+': "'+text+'"','');
   if(!n||!n.g||n.dead)return;
   if(n.bubble){n.g.remove(n.bubble.s);n.bubble=null;}
   const s=new THREE.Sprite(new THREE.SpriteMaterial({map:canvasTex(512,170,(x,w,h)=>{
@@ -3120,11 +3122,12 @@ function startJob(type){
     J.chef=makeNPC('Chef Marco',{shirt:'#f4f4f2',cap:'#f4f4f2'});npcPlace(J.chef,m.x+14.5,m.z+14.5,-2.36);J.chef.wave=true;npcIcon(J.chef,def.hex);
   }else if(type==='police'){J.stage='dispatch';J.kind='';J.bumpCool=0;J.meter=0;J.far=0;later(J,2.5,()=>policeNextCall(J));toast('On duty. Waiting for dispatch…','gold');}
   else newFare();
-  jobVisuals();toast(def.name+' started','gold');beep(740,.15,'square');
+  jobVisuals();coLeaderStart(J);toast(def.name+' started','gold');beep(740,.15,'square');
 }
 function jobCleanupNPCs(J){npcRemove(J.npc);npcRemove(J.chef);}
 function cancelJob(silent){
   const J=state.job;if(!J)return;
+  coOnCancel(J);
   jobCleanupNPCs(J);cleanupSuspect(J);state.siren=false;state.job=null;jobMark.g.visible=false;
   if(state.wp&&state.wp.job)state.wp=null;
   jobVisuals();
@@ -3199,10 +3202,10 @@ function jobVisuals(){
   const rz=B.cr1+.55;
   if(J.type==='pizza'&&J.carrying>0){
     for(let i=0;i<J.carrying;i++){const b=new THREE.Mesh(new THREE.BoxGeometry(.46,.07,.46),mat('#c89a5e',{roughness:.9}));b.position.set(-.3,B.belt+.12+i*.075,rz);add(b);}
-  }else if(J.type==='courier'&&J.carrying>0){
+  }else if(J.type==='courier'&&J.carrying>0&&(!J.carrierId||J.carrierId===Net.id)){
     const b=new THREE.Mesh(new THREE.BoxGeometry(.5,.4,.42),mat('#b98a52',{roughness:.9}));b.position.set(-.3,B.belt+.2,rz);add(b);
     const t=new THREE.Mesh(new THREE.BoxGeometry(.52,.05,.1),mat('#e8d9a8'));t.position.set(-.3,B.belt+.41,rz);add(t);
-  }else if(J.type==='taxi'&&J.carrying>0&&J.look){
+  }else if(J.type==='taxi'&&J.carrying>0&&J.look&&(!J.carrierId||J.carrierId===Net.id)){
     const sh=new THREE.Mesh(new THREE.CylinderGeometry(.2,.23,.55,8).translate(0,.28,0),new THREE.MeshStandardMaterial({color:C(J.look.shirt),roughness:.85}));
     const hd_=new THREE.Mesh(new THREE.SphereGeometry(.14,10,8).translate(0,.72,0),new THREE.MeshStandardMaterial({color:C(J.look.skin),roughness:.7}));
     const grp=new THREE.Group();grp.add(sh,hd_);grp.position.set(-.35,B.belt-.02,rz);add(grp);
@@ -3211,7 +3214,7 @@ function jobVisuals(){
 function jobRestore(){if(state.job)jobVisuals();}
 
 function jobBump(b){
-  const J=state.job;if(!J)return;
+  const J=state.job;if(!J||J.remote)return;
   if(J.type==='police'){J.stars=Math.max(1,J.stars-.2);return;}
   if(!J.carrying&&J.stage!=='trip')return;
   J.stars=Math.max(1,J.stars-.3);J.cond=Math.max(.3,J.cond-(curDef().job==='courier'?.06:.12));
@@ -3220,7 +3223,7 @@ function jobBump(b){
   else if(J.type==='pizza')toast('The pizzas got shaken up','bad');
   else if(J.npc||J.look)carSay(J.look?J.look.name:'Passenger',pick(lines));
 }
-function carSay(name,text){toast(name+': "'+text+'"','');}
+function carSay(name,text){jtoast(name+': "'+text+'"','');}
 
 function jobPay(J,d){
   const T=J.type;let base,tip=0;
@@ -3239,19 +3242,20 @@ function jobPay(J,d){
 function jobMult(type){const d=curDef();return d.job===type&&type!=='police'?1.3:1;}
 function jobFinishOne(J,pay,msg){
   const mu=jobMult(J.type);if(mu>1){pay=Math.round(pay*mu);msg+=' (job car ×'+mu+')';}
+  if(coDistribute(J,pay,msg))return;
   save.money+=pay;save.jobs=(save.jobs||0)+1;save.jobEarn=(save.jobEarn||0)+pay;J.earned+=pay;J.done++;
   if(J.stars>=4)J.streak++;else J.streak=0;
   toast(msg+'  +'+$m(pay)+(J.streak>1?'  ·  streak ×'+J.streak:''),'gold');beep(988,.12);persist();
 }
-function jobArriveGoto(J){
-  const p=player,T=J.type;
+function jobArriveGoto(J,pp){
+  const p=pp||player,T=J.type;J.carrierId=(pp&&pp.id)||Net.id;
   if(T==='pizza'){
     J.stage='board';J.tStage=0;npcSay(J.chef,'Fresh and hot! Good luck!',3.5);J.chef.wave=false;
     later(J,1.4,()=>{
       const n=1+((Math.random()*3)|0);let from={x:J.target.x,z:J.target.z};J.orders=[];J.oi=0;
       for(let i=0;i<n;i++){const s=curbSpot(180,800,from);J.orders.push({spot:s});from={x:s.rx,z:s.rz};}
       J.carrying=n;jobVisuals();npcIcon(J.chef,J.def.hex);J.chef.wave=true;
-      toast(n+(n>1?' orders':' order')+' loaded. Deliver them while they are hot!','gold');
+      jtoast(n+(n>1?' orders':' order')+' loaded. Deliver them while they are hot!','gold');
       pizzaNextOrder(J);
     });
     return;
@@ -3284,8 +3288,8 @@ function pizzaNextOrder(J){
   J.look={name:n.name};J.tTrip=0;J.par=o.spot.d/10+25;J.heat=1;J.stage='trip';J.dest=o.spot;
   jobSetTarget({x:o.spot.rx,z:o.spot.rz,label:'Deliver to '+o.spot.label},J.def.hex);
 }
-function jobArriveTrip(J){
-  const p=player,T=J.type,dest=J.dest;J.stage='drop';J.tStage=0;
+function jobArriveTrip(J,pp){
+  const p=pp||player,T=J.type,dest=J.dest;const pid=(pp&&pp.id)||Net.id;J.stage='drop';J.tStage=0;
   const rx=-Math.cos(p.h),rz=Math.sin(p.h);
   if(T==='pizza'){
     const n=J.npc;n.wave=false;
@@ -3294,7 +3298,7 @@ function jobArriveTrip(J){
       J.carrying--;jobVisuals();
       const pay=jobPay(J,dest.d);
       npcSay(n,pick(['Smells great, thanks!','Perfect, right on time!','Mmm! Keep the change.']),3);
-      jobFinishOne(J,pay,'Delivered');
+      J.actorId=pid;jobFinishOne(J,pay,'Delivered');
       npcWalk(n,dest.nx,dest.nz,()=>{n.fade=2.5;},1.8);
       J.oi++;
       later(J,2,()=>{
@@ -3314,33 +3318,37 @@ function jobArriveTrip(J){
   J.carrying=0;jobVisuals();
   const pay=jobPay(J,Math.hypot(dest.rx-J.start.x,dest.rz-J.start.z));
   npcSay(n,T==='taxi'?(J.stars>=4?pick(['Great ride, thank you!','Smooth driving! Five stars.','Thanks, keep the change!']):pick(['That was a bumpy ride...','Hmm. Could be smoother.'])):(J.cond>.8?'Perfect condition. Thank you!':'The parcel looks a bit damaged...'),3.5);
-  jobFinishOne(J,pay,T==='taxi'?'Fare complete':'Parcel delivered');
+  J.actorId=pid;jobFinishOne(J,pay,T==='taxi'?'Fare complete':'Parcel delivered');
   npcWalk(n,dest.nx,dest.nz,()=>{n.fade=2.5;},1.9);
   later(J,3.5,()=>{if(state.job===J)newFare();});
 }
 function jobUpdate(dt){
   const J=state.job;if(!J||!player)return;
+  if(J.remote){coMirrorUpdate(J,dt);return;}
   const p=player;J.t+=dt;J.tStage+=dt;
   for(let i=J.after.length-1;i>=0;i--){if(J.t>=J.after[i].t){const f=J.after[i].fn;J.after.splice(i,1);f();if(state.job!==J)return;}}
   if(J.type==='police'){policeUpdate(J,dt);return;}
   const T=J.target;J.d=T?Math.hypot(T.x-p.x,T.z-p.z):0;
-  const near=T&&J.d<9.5&&p.speed<4.2;
+  const acts=jobActors(J);
+  const nearAct=T?acts.find(a=>Math.hypot(T.x-a.x,T.z-a.z)<9.5&&a.speed<4.2&&(J.stage!=='trip'||J.type==='pizza'||!J.carrierId||a.id===J.carrierId)):null;
+  const near=!!nearAct;
+  const anyClose=T?acts.some(a=>Math.hypot(T.x-a.x,T.z-a.z)<70):false;
   if(J.stage==='goto'){
-    if(J.npc&&!J.greeted&&J.d<70){J.greeted=true;if(J.type==='taxi')npcSay(J.npc,'Taxi! Over here!',3);else if(J.type==='courier')npcSay(J.npc,'Hey! Courier! Here!',3);}
+    if(J.npc&&!J.greeted&&anyClose){J.greeted=true;if(J.type==='taxi')npcSay(J.npc,'Taxi! Over here!',3);else if(J.type==='courier')npcSay(J.npc,'Hey! Courier! Here!',3);}
     if(J.type!=='pizza'){J.wait+=dt;if(J.wait>150){toast('The customer gave up waiting','bad');newFare();return;}}
-    if(near)jobArriveGoto(J);
+    if(near)jobArriveGoto(J,nearAct);
   }else if(J.stage==='trip'){
     J.tTrip+=dt;
     if(J.type==='pizza')J.heat=clamp(1-J.tTrip/(J.par*(curDef().job==='pizza'?2.2:1.5)),0,1);
     if(J.tTrip>J.par*1.5&&Math.floor(J.tTrip)%15===0&&J.stars>2&&J.say!==Math.floor(J.tTrip)){J.say=Math.floor(J.tTrip);J.stars=Math.max(2,J.stars-.2);}
-    if(J.type==='taxi'){
+    if(J.type==='taxi'&&(!J.carrierId||J.carrierId===Net.id)){
       const lat=Math.abs(p.yaw*p.vf);
       if(lat>10&&p.speed>10){J.comfort+=dt;if(J.comfort>1.1){J.comfort=0;J.stars=Math.max(1,J.stars-.25);carSay(J.look.name,pick(['Whoa, easy on the corners!','Please slow down!','I feel sick...']));}}
       else if(p.speed*3.6>190){J.comfort+=dt*.6;if(J.comfort>1.5){J.comfort=0;J.stars=Math.max(1,J.stars-.2);carSay(J.look.name,'This is too fast!');}}
       else J.comfort=Math.max(0,J.comfort-dt*.5);
       if(Math.random()<dt*.02&&!J.talked)carSay(J.look.name,pick(TALK));
     }
-    if(near)jobArriveTrip(J);
+    if(near)jobArriveTrip(J,nearAct);
   }
 }
 function jobFrame(dt,t){
@@ -3372,10 +3380,12 @@ function jobHud(){
     else extra=J.stage==='goto'?'Stop in the ring':'';
   }
   const mu=jobMult(J.type);if(mu>1)extra+=(extra?' · ':'')+'Job car ×'+mu;
+  const tm=coTeamCount();if(tm>1)extra+=(extra?' · ':'')+'Team ×'+tm;
   return `<div class="jt">${J.def.icon} ${J.def.name}<span>${$m(J.earned)}</span></div><div class="js">${esc(line)}${J.type==='police'&&J.stage==='chase'?'':' · '+Math.round(J.d)+' m'}${right?' · '+right:''}</div><div class="js">${extra?extra+' · ':''}${stars}${J.streak>1?' · streak ×'+J.streak:''}</div>`;
 }
 function jobsHtml(){
   let h=`<div class="s" style="color:var(--dim);font-size:13px">Jobs done: ${save.jobs||0} · Total earned: ${$m(save.jobEarn||0)}. Start a job here or drive to its glowing marker and press E. Any car works: it is converted with posters and decals while you work, and restored when you finish.</div>`;
+  h+=coOffersHtml();
   for(const k of Object.keys(JOBS)){
     const j=JOBS[k],act=state.job&&state.job.type===k;
     h+=`<div class="item" style="cursor:default"><div class="t">${j.icon} ${j.name}<span class="sp"></span><span class="gold" style="font-size:13px">${j.pay}</span></div><div class="s">${j.desc}</div>
@@ -3412,16 +3422,16 @@ function policeNextCall(J){
     const n=J.npc=makeNPC(pick(NPC_NAMES),{});npcPlace(n,spot.nx,spot.nz,spot.h);n.wave=true;npcIcon(n,'#3b82f6');
     J.par=spot.d/22+20;J.stage='goto';J.wait=0;J.greeted=false;
     jobSetTarget({x:spot.rx,z:spot.rz,label:'Emergency on '+spot.label},J.def.hex);
-    toast('Dispatch: emergency on '+spot.label+'. Lights and sirens!','gold');
+    jtoast('Dispatch: emergency on '+spot.label+'. Lights and sirens!','gold');
   }else{
     const S=J.suspect=spawnSuspect(kind);J.stage='chase';J.par=60;
     jobSetTarget({x:S.x,z:S.z,label:kind==='pursuit'?'Suspect vehicle':'Speeding car'},J.def.hex);
-    toast(kind==='pursuit'?'Dispatch: suspect fleeing! Chase them down and stop them.':'Dispatch: speeder ahead. Stay behind them to pull them over.','gold');
+    jtoast(kind==='pursuit'?'Dispatch: suspect fleeing! Chase them down and stop them.':'Dispatch: speeder ahead. Stay behind them to pull them over.','gold');
   }
   jobVisuals();
 }
 function policeFail(J,msg){
-  toast(msg,'bad');J.streak=0;state.siren=false;J.stage='cooldown';cleanupSuspect(J);jobMark.g.visible=false;
+  jtoast(msg,'bad');J.streak=0;state.siren=false;J.stage='cooldown';cleanupSuspect(J);jobMark.g.visible=false;
   later(J,3,()=>policeNextCall(J));
 }
 function suspectStops(J){
@@ -3431,7 +3441,7 @@ function suspectStops(J){
   const n=J.npc=makeNPC(pick(NPC_NAMES),{shirt:'#2a2d33'});npcPlace(n,S.x+rx*2.4,S.z+rz*2.4,0);n.wave=true;npcIcon(n,'#3b82f6');
   npcSay(n,J.kind==='pursuit'?'Okay, okay! I give up!':'Alright, officer, you got me.',3.5);
   jobSetTarget({x:S.x,z:S.z,label:'Make the arrest'},J.def.hex);
-  toast('The suspect pulled over! Stop next to them.','good');
+  jtoast('The suspect pulled over! Stop next to them.','good');
 }
 function arrestDone(J){
   state.siren=false;J.stage='cooldown';
@@ -3451,23 +3461,27 @@ function responseArrive(J){
   later(J,4,()=>{if(state.job===J)policeNextCall(J);});
 }
 function policeUpdate(J,dt){
-  const p=player;
+  const acts=jobActors(J),p=player;
   state.siren=(J.stage==='goto'||J.stage==='chase'||J.stage==='arrest');
+  const nearestTo=(x,z)=>{let b=acts[0],bd=1e9;for(const a of acts){const d=Math.hypot(x-a.x,z-a.z);if(d<bd){bd=d;b=a;}}return {a:b,d:bd};};
   if(J.stage==='goto'){
     J.tTrip+=dt;J.d=Math.hypot(J.target.x-p.x,J.target.z-p.z);
-    if(J.npc&&!J.greeted&&J.d<70){J.greeted=true;npcSay(J.npc,'Officer! Over here!',3);}
-    if(J.d<9.5&&p.speed<4.2)responseArrive(J);
+    const nr=nearestTo(J.target.x,J.target.z);
+    if(J.npc&&!J.greeted&&nr.d<70){J.greeted=true;npcSay(J.npc,'Officer! Over here!',3);}
+    const na=acts.find(a=>Math.hypot(J.target.x-a.x,J.target.z-a.z)<9.5&&a.speed<4.2);
+    if(na){J.actorId=na.id;responseArrive(J);}
     else if(J.tTrip>J.par*2)policeFail(J,'Call expired. You were too slow.');
   }else if(J.stage==='chase'){
     const S=J.suspect;if(!S)return;
-    const dx=S.x-p.x,dz=S.z-p.z,d=Math.hypot(dx,dz);J.d=d;J.tTrip+=dt;J.chaseT=J.tTrip;
+    const nr=nearestTo(S.x,S.z),d=nr.d,na=nr.a;
+    J.d=Math.hypot(S.x-p.x,S.z-p.z);J.tTrip+=dt;J.chaseT=J.tTrip;
     J.target.x=S.x;J.target.z=S.z;state.wp&&(state.wp.x=S.x,state.wp.z=S.z);jobMark.g.position.set(S.x,0,S.z);
     J.bumpCool-=dt;
     if(J.kind==='pursuit'){
       if(d<22)J.meter+=dt/9;else if(d>40)J.meter=Math.max(0,J.meter-dt/18);
       if(d<3.6&&J.bumpCool<=0){J.meter+=.18;J.bumpCool=1.2;toast('Contact!','');}
     }else{
-      const fx=Math.sin(S.h),fz=Math.cos(S.h),behind=((p.x-S.x)*fx+(p.z-S.z)*fz)<0;
+      const fx=Math.sin(S.h),fz=Math.cos(S.h),behind=((na.x-S.x)*fx+(na.z-S.z)*fz)<0;
       if(d<16&&behind)J.meter+=dt/4;else J.meter=Math.max(0,J.meter-dt/8);
     }
     if(d>170){J.far+=dt;if(J.far>8){policeFail(J,'The suspect got away.');return;}}else J.far=0;
@@ -3475,7 +3489,8 @@ function policeUpdate(J,dt){
   }else if(J.stage==='arrest'){
     const S=J.suspect;if(!S)return;
     J.d=Math.hypot(S.x-p.x,S.z-p.z);J.tTrip+=dt;
-    if(J.d<9.5&&p.speed<4.2)arrestDone(J);
+    const na=acts.find(a=>Math.hypot(S.x-a.x,S.z-a.z)<9.5&&a.speed<4.2);
+    if(na){J.actorId=na.id;arrestDone(J);}
   }
 }
 function jobMarkersInit(){
@@ -3716,7 +3731,7 @@ const r1=v=>Math.round(v*10)/10,r2=v=>Math.round(v*100)/100;
 function netSnap(){
   const c=player;if(!c)return null;const o=curOwned();
   return {i:Net.id,n:Net.name,c:c.def.id,k:o.color,m:state.mode,e:state.ev?state.ev.id:'',x:r2(c.x),z:r2(c.z),h:r2(c.h),vx:r1(c.vx),vz:r1(c.vz),
-    s:r2(c.steer),v:r1(c.speed),t:r2(c.thr),b:r2(c.brk),p:r2(c.rpm),g:c.gear,l:c.lap,d:c.idx,f:c.finished?1:0,ft:r2(c.finishT||0),q:isFinite(c.bestLap)?r2(c.bestLap):0};
+    s:r2(c.steer),v:r1(c.speed),th:r2(c.thr),b:r2(c.brk),p:r2(c.rpm),g:c.gear,l:c.lap,d:c.idx,f:c.finished?1:0,ft:r2(c.finishT||0),q:isFinite(c.bestLap)?r2(c.bestLap):0};
 }
 function netBroadcast(msg,except){for(const l of Net.links.values())if(l!==except&&l.open){try{l.send(msg);}catch(e){}}}
 
@@ -3730,13 +3745,13 @@ function netState(id,s){
     remotes.set(id,R);toast((s.n||'A driver')+' joined','good');if(state.phone&&state.tab==='net')renderPhone();
   }
   R.name=String(s.n||'Driver').slice(0,16);R.mode=s.m;R.ev=s.e;R.carId=s.c;R.colIdx=s.k;
-  R.tx=s.x;R.tz=s.z;R.th=s.h;R.vx=s.vx||0;R.vz=s.vz||0;R.steer=s.s||0;R.speed=s.v||0;R.thr=s.t||0;R.brk=s.b||0;R.rpm=s.p||.2;R.gear=s.g||0;
+  R.tx=s.x;R.tz=s.z;R.th=s.h;R.vx=s.vx||0;R.vz=s.vz||0;R.steer=s.s||0;R.speed=s.v||0;R.thr=s.th||0;R.brk=s.b||0;R.rpm=s.p||.2;R.gear=s.g||0;
   R.lap=s.l||0;R.idx=s.d||0;R.fin=s.f||0;R.ft=s.ft||0;R.best=s.q||0;R.seen=performance.now();
 }
 function removeRemote(id){
   const R=remotes.get(id);if(!R)return;
   if(R.mesh){scene.remove(R.mesh.g);R.mesh.g.traverse(o=>{if(o.geometry)o.geometry.dispose();});}
-  remotes.delete(id);toast((R.name||'A driver')+' left','');if(state.phone&&state.tab==='net')renderPhone();
+  remotes.delete(id);coPeerLeft(id);toast((R.name||'A driver')+' left','');if(state.phone&&state.tab==='net')renderPhone();
 }
 function remotesUpdate(dt){
   const now=performance.now();
@@ -3797,9 +3812,9 @@ function netGo(go){
   toast('Race starting: '+ev.name,'gold');startEvent(ev,go);
 }
 function netStartRace(evId){
-  const ev=EVENTS.find(e=>e.id===evId);if(!ev||!Net.mode||!Net.host)return;
+  const ev=EVENTS.find(e=>e.id===evId);if(!ev||!Net.mode)return;
   const ids=[Net.id];for(const R of remotes.values())if(R.mode==='roam'&&ids.length<8)ids.push(R.id);
-  const go={n:Date.now(),ev:evId,seed:(Math.random()*1e9)|0,ids};
+  const go={n:Date.now(),ev:evId,seed:(Math.random()*1e9)|0,ids,sim:Net.id};
   Net.goN=go.n;
   if(Net.mode==='room')Net.roomObj.presence({g:go}).catch(()=>{});else netBroadcast({t:'g',go});
   startEvent(ev,go);
@@ -3811,16 +3826,15 @@ function netTick(dt){
   Net.acc+=dt;if(Net.acc<1/15)return;Net.acc=0;
   const s=netSnap();if(!s)return;
   if(Net.mode==='room'){
-    const patch={s,hs:Net.host?1:0,a:(Net.host&&state.mode==='race')?netAIArr():null};
+    const patch=Object.assign({s,hs:Net.host?1:0,a:(state.mode==='race'&&state.go&&state.go.sim===Net.id)?netAIArr():null},coPresence());
     Net.roomObj.presence(patch).catch(()=>{});
   }else if(Net.links.size){
     netBroadcast(Object.assign({t:'s'},s));
-    if(Net.host){
-      const now=performance.now();
-      if(state.mode==='race'){if(now-Net.aAcc>80){Net.aAcc=now;netBroadcast({t:'a',a:netAIArr()});}}
-      else if(now-Net.tAcc>125){Net.tAcc=now;netBroadcast({t:'o',tod:r2(state.tod),clk:r1(clock),tr:traffic.map(t=>[r1(t.x),r1(t.z),r2(t.h),r1(t.speed)])});}
-    }
+    const now=performance.now();
+    if(state.mode==='race'&&state.go&&state.go.sim===Net.id){if(now-Net.aAcc>80){Net.aAcc=now;netBroadcast({t:'a',a:netAIArr()});}}
+    else if(Net.host&&state.mode!=='race'&&now-Net.tAcc>125){Net.tAcc=now;netBroadcast({t:'o',tod:r2(state.tod),clk:r1(clock),tr:traffic.map(t=>[r1(t.x),r1(t.z),r2(t.h),r1(t.speed)])});}
   }
+  coNetTick(performance.now());
 }
 function netOnMsg(link,m){
   if(!m||typeof m!=='object')return;
@@ -3830,9 +3844,10 @@ function netOnMsg(link,m){
       netState(id,m);
       if(Net.host)netBroadcast(Object.assign({},m,{i:id}),link);
       break;}
-    case 'a':if(!Net.host&&Array.isArray(m.a))netAIdata(m.a);break;
+    case 'a':if(Array.isArray(m.a)&&!(state.go&&state.go.sim===Net.id))netAIdata(m.a);if(Net.host)netBroadcast(m,link);break;
     case 'o':if(!Net.host){state.tod=m.tod;Net.clkOff=m.clk-clock;Net.tr=m.tr;}break;
-    case 'g':if(!Net.host)netGo(m.go);break;
+    case 'g':netGo(m.go);if(Net.host)netBroadcast(m,link);break;
+    case 'jb':case 'jj':case 'jl':case 'jp':case 'je':case 'jt':coOnMsg(m);if(Net.host)netBroadcast(m,link);break;
     case 'w':Net.id=m.cid;netStatus('Connected to '+(m.name||'host'));break;
     case 'l':removeRemote(m.i);break;
   }
@@ -3918,8 +3933,9 @@ function onRoomPeers(ch){
     if(p.kind!=='viewer')continue;
     const pr=p.presence||{};
     if(pr.s)netState(p.peer,pr.s);
-    if(pr.hs&&Array.isArray(pr.a)&&!Net.host)netAIdata(pr.a);
+    if(Array.isArray(pr.a)&&!(state.go&&state.go.sim===Net.id))netAIdata(pr.a);
     if(pr.g&&typeof pr.g.n==='number')netGo(pr.g);
+    coOnPeer(p.peer,pr);
   }
   for(const l of ch.left)removeRemote(l.peer);
   const n=ch.peers.filter(p=>p.kind==='viewer').length;
@@ -4008,10 +4024,10 @@ function netHtml(){
   const rows=[`<div class="r"><b>${esc(Net.name)}</b> (you)${Net.host?' <span class="badge b2">host</span>':''}<span class="sp"></span><span class="s">${esc(curDef().name)}</span></div>`];
   for(const R of remotes.values())rows.push(`<div class="r"><b>${esc(R.name)}</b><span class="sp"></span><span class="s">${esc(carById(R.carId).name)} · ${R.mode==='race'?'racing':'in city'}</span></div>`);
   h+=`<div class="item" style="cursor:default"><div class="t">Players (${rows.length})</div>${rows.join('')}</div>`;
-  if(Net.host&&Net.connected){
+  if(Net.connected){
     h+=`<div class="item" style="cursor:default"><div class="t">Race together</div><div class="s">Starts the event for everyone in the city. Class rules are waived for friends.</div>`+
       EVENTS.map(ev=>`<div class="r"><span>${esc(ev.name)}</span><span class="sp"></span><button class="sbtn" data-act="nrace" data-id="${ev.id}">Start</button></div>`).join('')+`</div>`;
-  }else if(Net.connected){h+=`<div class="s" style="color:var(--dim);font-size:13px">The host picks the race; you'll be pulled in automatically.</div>`;}
+  }
   h+=`<div class="r"><span class="sp"></span><button class="sbtn ghost" data-act="nleave">Leave</button></div>`;
   return h;
 }
@@ -4041,6 +4057,202 @@ $('pbody').addEventListener('input',e=>{
   else{Net.ui[k]=t.value;if(k==='server')save.peerServer=t.value.trim();}
 });
 
+
+/* ============ co-op jobs: friends join your pizza / taxi / courier / police job ============ */
+const Co={role:null,leaderId:null,members:new Set(),offers:{},out:{jb:null,jpq:[],jtq:[]},seq:0,lastOut:0,lastN:{},npcM:null,chefM:null,susM:null};
+const nameOf=id=>{const R=remotes.get(id);return R&&R.name?R.name:'A friend';};
+function coTeamCount(){
+  if(Co.role==='leader')return 1+Co.members.size;
+  if(Co.role==='joiner'&&state.job)return state.job.teamN||1;
+  return 1;
+}
+function jobActors(J){
+  const a=[{id:Net.id,x:player.x,z:player.z,h:player.h,speed:player.speed,vx:player.vx,vz:player.vz,local:true}];
+  if(Co.role==='leader')for(const id of Co.members){const R=remotes.get(id);if(R&&R.mode==='roam')a.push({id:R.id,x:R.x,z:R.z,h:R.h,speed:R.speed,vx:R.vx,vz:R.vz,local:false});}
+  return a;
+}
+function coSend(msg){
+  if(Net.mode==='room'){
+    if(msg.t==='jp')Co.out.jpq.push({n:++Co.seq,to:msg.to,amt:msg.amt,msg:msg.msg});
+    else if(msg.t==='jt')Co.out.jtq.push({n:++Co.seq,x:msg.x});
+    return;
+  }
+  if(Net.links&&Net.links.size)netBroadcast(msg);
+}
+function jtoast(text,cls){toast(text,cls);if(Co.role==='leader')coSend({t:'jt',x:text});}
+function coPresence(){
+  return {jb:Co.role==='leader'?Co.out.jb:null,jj:Co.role==='joiner'?Co.leaderId:null,jpq:Co.out.jpq.slice(-6),jtq:Co.out.jtq.slice(-6)};
+}
+function coBuild(J){
+  const n=J.npc&&!J.npc.dead?J.npc:null,S=J.suspect;
+  return {i:Net.id,tp:J.type,st:J.stage,k:J.kind||'',
+    tg:J.target?[r1(J.target.x),r1(J.target.z),J.target.label]:null,
+    np:n?[r1(n.g.position.x),r1(n.g.position.z),r2(n.g.rotation.y),n.wave?1:0,n.shirt||'',n.skin||'',n.name]:null,
+    sus:S?[r1(S.x),r1(S.z),r2(S.h),r1(S.speed),S.def.id]:null,
+    mt:r2(J.meter||0),par:r1(J.par||0),tt:r1(J.tTrip||0),sr:r2(J.stars),cd:r2(J.cond),ht:r2(J.heat),ca:J.carrying||0,car:J.carrierId||'',
+    on:J.orders&&J.orders.length?J.orders.length-J.oi:0,er:Math.round(J.earned),dn:J.done,sk:J.streak,hb:J.harbor?1:0,
+    lk:J.look?[J.look.name,J.look.shirt||'',J.look.skin||'']:null,tm:1+Co.members.size};
+}
+function coPublish(){
+  const J=state.job;if(Co.role!=='leader'||!J||J.remote)return;
+  const m=coBuild(J);
+  if(Net.mode==='room')Co.out.jb=m;else coSend(Object.assign({t:'jb'},m));
+}
+function coNetTick(now){
+  if(Co.role==='leader'&&state.job&&now-Co.lastOut>160){Co.lastOut=now;coPublish();}
+}
+function coLeaderStart(J){
+  Co.members.clear();
+  if(!Net.mode||!Net.connected){Co.role=null;return;}
+  Co.role='leader';Co.leaderId=Net.id;J.coop=true;coPublish();
+  toast('Friends can join this job from the Jobs tab (J)','');
+}
+function coOffer(m){
+  if(m.i===Net.id)return;
+  const fresh=!Co.offers[m.i];
+  Co.offers[m.i]={m,at:performance.now()};
+  if(fresh&&!(Co.role==='joiner'&&Co.leaderId===m.i))toast(nameOf(m.i)+' started '+(JOBS[m.tp]?JOBS[m.tp].name:'a job')+'. Open Jobs (J) to join.','gold');
+}
+function coApplyState(m){
+  if(Co.role!=='joiner'||Co.leaderId!==m.i)return;
+  let J=state.job;
+  if(!J||!J.remote){
+    J=state.job={remote:true,type:m.tp,def:JOBS[m.tp],stage:m.st,t:0,tStage:0,tTrip:0,stars:5,earned:0,done:0,streak:0,target:null,carrying:0,orders:[],oi:0,par:60,heat:1,cond:1,d:0,after:[],kind:'',meter:0,harbor:false,look:null,carryKey:''};
+  }
+  J.type=m.tp;J.def=JOBS[m.tp];J.stage=m.st;J.kind=m.k;J.par=m.par;J.tTrip=m.tt;J.stars=m.sr;J.cond=m.cd;J.heat=m.ht;J.meter=m.mt;J.streak=m.sk;J.done=m.dn;
+  J.harbor=!!m.hb;J.teamN=m.tm;J.carrierId=m.car;J.look=m.lk?{name:m.lk[0],shirt:m.lk[1],skin:m.lk[2]}:null;
+  J.orders=new Array(m.on);J.oi=0;
+  J.carrying=(m.tp==='pizza')?m.ca:(m.car===Net.id?m.ca:0);
+  J.npcState=m.np;J.susState=m.sus;
+  if(m.tg){const t=J.target;if(!t||t.x!==m.tg[0]||t.z!==m.tg[1]||t.label!==m.tg[2])jobSetTarget({x:m.tg[0],z:m.tg[1],label:m.tg[2]},J.def.hex);}
+  state.siren=(m.tp==='police'&&(m.st==='goto'||m.st==='chase'||m.st==='arrest'));
+  const key=J.carrying+'|'+m.car+'|'+m.tp;
+  if(J.carryKey!==key){J.carryKey=key;jobVisuals();}
+}
+function coRemoveSus(){
+  if(!Co.susM)return;
+  cityGroup.remove(Co.susM.mesh.g);Co.susM.mesh.g.traverse(o=>{if(o.geometry)o.geometry.dispose();});Co.susM=null;
+}
+function coClearMirror(){
+  if(Co.npcM){npcRemove(Co.npcM);Co.npcM=null;}
+  if(Co.chefM){npcRemove(Co.chefM);Co.chefM=null;}
+  coRemoveSus();
+}
+function coMirrorUpdate(J,dt){
+  const T=J.target;J.d=T?Math.hypot(T.x-player.x,T.z-player.z):0;
+  const ns=J.npcState;
+  if(ns){
+    const key=ns[6]+'|'+ns[4]+'|'+ns[5];
+    if(!Co.npcM||Co.npcM.dead||Co.npcM.key!==key){
+      if(Co.npcM)npcRemove(Co.npcM);
+      Co.npcM=makeNPC(ns[6],{shirt:ns[4]||undefined,skin:ns[5]||undefined});Co.npcM.key=key;npcPlace(Co.npcM,ns[0],ns[1],ns[2]);npcIcon(Co.npcM,J.def.hex);
+    }
+    const n=Co.npcM,k=Math.min(1,dt*8);
+    n.g.position.x+=(ns[0]-n.g.position.x)*k;n.g.position.z+=(ns[1]-n.g.position.z)*k;n.g.rotation.y=ns[2];n.wave=!!ns[3];
+  }else if(Co.npcM){npcRemove(Co.npcM);Co.npcM=null;}
+  if(J.type==='pizza'&&!Co.chefM){
+    const m=markers.find(q=>q.job==='pizza');
+    if(m){Co.chefM=makeNPC('Chef Marco',{shirt:'#f4f4f2',cap:'#f4f4f2'});npcPlace(Co.chefM,m.x+14.5,m.z+14.5,-2.36);Co.chefM.wave=true;npcIcon(Co.chefM,J.def.hex);}
+  }
+  const ss=J.susState;
+  if(ss){
+    if(!Co.susM){
+      const def=carById(ss[4]),m=buildCar(def,'#2d3138',true);cityGroup.add(m.g);
+      Co.susM={mesh:m,x:ss[0],z:ss[1],h:ss[2],spin:0,wr:BODY[def.body].wr};
+    }
+    const s=Co.susM,k=Math.min(1,dt*8);
+    s.x+=(ss[0]-s.x)*k;s.z+=(ss[1]-s.z)*k;s.h+=wrapPI(ss[2]-s.h)*k;s.spin+=ss[3]/s.wr*dt;
+    const g=s.mesh.g;g.position.set(s.x,0,s.z);g.rotation.y=s.h;
+    [s.mesh.fl,s.mesh.fr,s.mesh.rl,s.mesh.rr].forEach(w=>{w.spin.rotation.x=s.spin;});
+    jobMark.g.position.set(s.x,0,s.z);
+  }else if(Co.susM)coRemoveSus();
+}
+function coCredit(amt,msg){
+  save.money+=amt;save.jobs=(save.jobs||0)+1;save.jobEarn=(save.jobEarn||0)+amt;
+  if(state.job&&state.job.remote)state.job.earned+=amt;
+  toast(msg+'  +'+$m(amt),'gold');beep(988,.12);persist();
+}
+function coDistribute(J,pay,msg){
+  if(Co.role!=='leader'||!Co.members.size)return false;
+  const comp=J.actorId||Net.id;
+  J.done++;if(J.stars>=4)J.streak++;else J.streak=0;
+  const ids=[Net.id].concat(Array.from(Co.members));
+  for(const id of ids){
+    const mine=id===comp,amt=mine?pay:Math.round(pay*.5),text=msg+(mine?'':' (team bonus)');
+    if(id===Net.id){
+      save.money+=amt;save.jobs=(save.jobs||0)+1;save.jobEarn=(save.jobEarn||0)+amt;J.earned+=amt;
+      toast(text+'  +'+$m(amt)+(J.streak>1?'  ·  streak ×'+J.streak:''),'gold');
+    }else coSend({t:'jp',to:id,amt,msg:text});
+  }
+  beep(988,.12);persist();coPublish();return true;
+}
+function coOnCancel(J){
+  if(J.remote){
+    coSend({t:'jl',to:Co.leaderId,from:Net.id});
+    coClearMirror();Co.role=null;Co.leaderId=null;
+  }else if(Co.role==='leader'){
+    coSend({t:'je',from:Net.id});Co.out.jb=null;Co.role=null;Co.members.clear();
+  }
+}
+function coMirrorEnded(){
+  if(Co.role==='joiner'&&state.job&&state.job.remote){toast('The job ended','');cancelJob(true);}
+}
+function coPeerLeft(id){
+  delete Co.offers[id];
+  if(Co.role==='leader')Co.members.delete(id);
+  if(Co.role==='joiner'&&Co.leaderId===id&&state.job){toast('The job leader left','');cancelJob(true);}
+}
+function coJoin(leaderId){
+  const o=Co.offers[leaderId];
+  if(!o){toast('That job is no longer available','bad');return;}
+  if(state.job){toast('Finish or cancel your current job first','bad');return;}
+  if(state.mode!=='roam')return;
+  closePhone();
+  Co.role='joiner';Co.leaderId=leaderId;
+  coSend({t:'jj',to:leaderId,from:Net.id});
+  coApplyState(o.m);
+  toast('Joined '+nameOf(leaderId)+"'s "+JOBS[o.m.tp].name,'gold');
+}
+function coOnMsg(m){
+  switch(m.t){
+    case 'jb':coOffer(m);if(Co.role==='joiner'&&Co.leaderId===m.i)coApplyState(m);break;
+    case 'jj':if(m.to===Net.id&&Co.role==='leader'&&!Co.members.has(m.from)){Co.members.add(m.from);toast(nameOf(m.from)+' joined your job','good');coPublish();}break;
+    case 'jl':if(m.to===Net.id&&Co.role==='leader'&&Co.members.delete(m.from)){toast(nameOf(m.from)+' left your job','');coPublish();}break;
+    case 'jp':if(m.to===Net.id)coCredit(m.amt,m.msg);break;
+    case 'je':delete Co.offers[m.from];if(Co.role==='joiner'&&Co.leaderId===m.from)coMirrorEnded();break;
+    case 'jt':if(Co.role==='joiner')toast(m.x,'');break;
+  }
+}
+function coOnPeer(id,pr){
+  if(pr.jb&&pr.jb.i===id){coOffer(pr.jb);if(Co.role==='joiner'&&Co.leaderId===id)coApplyState(pr.jb);}
+  else if(Co.offers[id]&&!pr.jb){delete Co.offers[id];if(Co.role==='joiner'&&Co.leaderId===id)coMirrorEnded();}
+  if(Co.role==='leader'){
+    const inJob=pr.jj===Net.id;
+    if(inJob&&!Co.members.has(id)){Co.members.add(id);toast(nameOf(id)+' joined your job','good');}
+    else if(!inJob&&Co.members.has(id)){Co.members.delete(id);toast(nameOf(id)+' left your job','');}
+  }
+  if(Array.isArray(pr.jpq))for(const e of pr.jpq){if(e&&e.to===Net.id&&(Co.lastN['p'+id]||0)<e.n){Co.lastN['p'+id]=e.n;coCredit(e.amt,e.msg);}}
+  if(Array.isArray(pr.jtq)&&Co.role==='joiner'&&Co.leaderId===id)for(const e of pr.jtq){if(e&&(Co.lastN['t'+id]||0)<e.n){Co.lastN['t'+id]=e.n;toast(e.x,'');}}
+}
+function coOffersHtml(){
+  const now=performance.now();let h='';
+  if(Co.role==='joiner'&&state.job)h+=`<div class="item" style="cursor:default;border-color:var(--gold)"><div class="t">🤝 Team job</div><div class="s">You joined ${esc(nameOf(Co.leaderId))}'s ${esc(state.job.def.name)}. Whoever reaches a stop first completes it and gets the full payout; everyone else on the team gets 50%.</div></div>`;
+  if(Co.role==='leader'&&Co.members.size)h+=`<div class="item" style="cursor:default;border-color:var(--gold)"><div class="t">🤝 Your team</div><div class="s">${Array.from(Co.members).map(id=>esc(nameOf(id))).join(', ')} joined your job.</div></div>`;
+  for(const id of Object.keys(Co.offers)){
+    const o=Co.offers[id];
+    if(now-o.at>5000){delete Co.offers[id];continue;}
+    if(id===Net.id||(Co.role==='joiner'&&Co.leaderId===id))continue;
+    const j=JOBS[o.m.tp];if(!j)continue;
+    h+=`<div class="item" style="cursor:default"><div class="t">${j.icon} ${esc(nameOf(id))}'s ${j.name}<span class="sp"></span><span class="gold" style="font-size:13px">${o.m.tm} on the job</span></div>
+      <div class="s">Join to share the work. You get the full payout for what you complete and 50% of what your friends complete.</div>
+      <div class="r"><span class="sp"></span><button class="sbtn" data-act="cjoin" data-id="${esc(id)}">Join job</button></div></div>`;
+  }
+  return h;
+}
+function coAct(act,id){
+  if(act==='cjoin'){coJoin(id);return true;}
+  return false;
+}
 
 /* ============ boot ============ */
 safe('city',()=>{cityBuild();markersInit();jobMarkersInit();dragMarkerInit();trafficInit(30);worldBuild();});
