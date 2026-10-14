@@ -2645,7 +2645,7 @@ const gauge=$('gauge'),gctx=gauge.getContext('2d'),mini=$('mini'),mctx=mini.getC
 let gdpr=1;
 const mmCam=new THREE.PerspectiveCamera(52,1,5,3600);let mmH=0;
 function setHud(mode){
-  const h=$('hud');h.classList.remove('hidden','roam','race');h.classList.add(mode);
+  const h=$('hud');h.classList.remove('hidden','roam','race','drag');h.classList.add(mode);
   if(coarse)$('touch').classList.remove('hidden');
   $('tRew').classList.toggle('hidden',mode!=='race');$('tMap').classList.toggle('hidden',mode!=='roam');$('tE').classList.toggle('hidden',mode!=='roam');
   fitHud();
